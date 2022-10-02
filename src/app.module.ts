@@ -14,6 +14,9 @@ import { PrismaModule } from './prisma/prisma.module';
       isGlobal: true,
       validationSchema: Joi.object({
         DATABASE_URL: Joi.string().required(),
+        JWT_KEY: Joi.string().required(),
+        AT_SECRET: Joi.string().required(),
+        RT_SECRET: Joi.string().required(),
       }),
     }),
   ],

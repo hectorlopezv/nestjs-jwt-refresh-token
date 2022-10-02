@@ -1,77 +1,98 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
-import { AuthDto } from './dto/auth.dto';
-import * as bcrypt from 'bcrypt';
-import { Tokens } from './types/tokes.type';
-import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime';
+import * as argon from 'argon2';
+import { PrismaService } from '../prisma/prisma.service';
+import { AuthDto } from './dto/auth.dto';
+import { JwtPayload } from './types/ jwtPayload.type';
+import { Tokens } from './types/tokes.type';
+
 @Injectable()
 export class AuthService {
   constructor(
-    private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
+    private prisma: PrismaService,
+    private jwtService: JwtService,
+    private config: ConfigService,
   ) {}
-  async signupLocal(authDto: AuthDto): Promise<Tokens> {
-    const hash = await this.hasData(authDto.password);
-    const newUser = await this.prisma.user.create({
-      data: {
-        email: authDto.email,
-        hash: hash,
+
+  async signupLocal(dto: AuthDto): Promise<Tokens> {
+    const hash = await argon.hash(dto.password);
+
+    const user = await this.prisma.user
+      .create({
+        data: {
+          email: dto.email,
+          hash,
+        },
+      })
+      .catch((error) => {
+        if (error instanceof PrismaClientKnownRequestError) {
+          if (error.code === 'P2002') {
+            throw new ForbiddenException('Credentials incorrect');
+          }
+        }
+        throw error;
+      });
+
+    const tokens = await this.getTokens(user.id, user.email);
+    await this.updateRtHash(user.id, tokens.refresh_token);
+
+    return tokens;
+  }
+
+  async signinLocal(dto: AuthDto): Promise<Tokens> {
+    const user = await this.prisma.user.findUnique({
+      where: {
+        email: dto.email,
       },
     });
-    const { access_token, refresh_token } = await this.getTokens(
-      newUser.id,
-      newUser.email,
-    );
-    await this.updateRtHash(newUser.id, refresh_token);
-    return { access_token, refresh_token };
-  }
-  async signinLocal(authDto: AuthDto): Promise<Tokens> {
-    const user = await this.prisma.user.findUnique({
-      where: { email: authDto.email },
-    });
+
     if (!user) throw new ForbiddenException('Access Denied');
 
-    const passWordMatches = await bcrypt.compare(authDto.password, user.hash);
-    if (!passWordMatches) throw new ForbiddenException('Access Denied');
-    const { access_token, refresh_token } = await this.getTokens(
-      user.id,
-      user.email,
-    );
-    await this.updateRtHash(user.id, refresh_token);
-    return { access_token, refresh_token };
+    const passwordMatches = await argon.verify(user.hash, dto.password);
+    if (!passwordMatches) throw new ForbiddenException('Access Denied');
+
+    const tokens = await this.getTokens(user.id, user.email);
+    await this.updateRtHash(user.id, tokens.refresh_token);
+
+    return tokens;
   }
-  async logout(userId: number) {
+
+  async logout(userId: number): Promise<boolean> {
     await this.prisma.user.updateMany({
+      where: {
+        id: userId,
+        hashedRt: {
+          not: null,
+        },
+      },
       data: {
         hashedRt: null,
       },
-      where: { id: userId, hashedRt: { not: null } },
     });
+    return true;
   }
 
-  async refreshTokens(userId: number, refreshTk: string): Promise<Tokens> {
+  async refreshTokens(userId: number, rt: string): Promise<Tokens> {
     const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+      where: {
+        id: userId,
+      },
     });
-    if (!user) throw new ForbiddenException('Access Denied');
+    if (!user || !user.hashedRt) throw new ForbiddenException('Access Denied');
 
-    const refresgTokenMatches = await bcrypt.compare(refreshTk, user.hashedRt);
-    if (!refresgTokenMatches) throw new ForbiddenException('Access Denied');
-    const { access_token, refresh_token } = await this.getTokens(
-      user.id,
-      user.email,
-    );
-    await this.updateRtHash(user.id, refresh_token);
-    return { access_token, refresh_token };
-  }
-  hasData(data: string): Promise<string> {
-    return bcrypt.hash(data, 10);
+    const rtMatches = await argon.verify(user.hashedRt, rt);
+    if (!rtMatches) throw new ForbiddenException('Access Denied');
+
+    const tokens = await this.getTokens(user.id, user.email);
+    await this.updateRtHash(user.id, tokens.refresh_token);
+
+    return tokens;
   }
 
-  async updateRtHash(userId: number, refreshToken: string) {
-    const hash = await this.hasData(refreshToken);
+  async updateRtHash(userId: number, rt: string): Promise<void> {
+    const hash = await argon.hash(rt);
     await this.prisma.user.update({
       where: {
         id: userId,
@@ -81,32 +102,27 @@ export class AuthService {
       },
     });
   }
+
   async getTokens(userId: number, email: string): Promise<Tokens> {
-    const [accessTk, refreshTK] = await Promise.all([
-      this.jwtService.signAsync(
-        {
-          sub: userId,
-          email,
-        },
-        {
-          secret: this.configService.get<string>('JWT_TOKEN'),
-          expiresIn: 60 * 15,
-        },
-      ),
-      this.jwtService.signAsync(
-        {
-          sub: userId,
-          email,
-        },
-        {
-          secret: this.configService.get<string>('JWT_TOKEN'),
-          expiresIn: 60 * 60 * 24 * 7,
-        },
-      ),
+    const jwtPayload: JwtPayload = {
+      sub: userId,
+      email: email,
+    };
+
+    const [at, rt] = await Promise.all([
+      this.jwtService.signAsync(jwtPayload, {
+        secret: this.config.get<string>('AT_SECRET'),
+        expiresIn: '15m',
+      }),
+      this.jwtService.signAsync(jwtPayload, {
+        secret: this.config.get<string>('RT_SECRET'),
+        expiresIn: '7d',
+      }),
     ]);
+
     return {
-      access_token: accessTk,
-      refresh_token: refreshTK,
+      access_token: at,
+      refresh_token: rt,
     };
   }
 }

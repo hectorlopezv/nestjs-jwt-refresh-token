@@ -8,21 +8,6 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
   @Post('/local/signup')
   signupLocal(@Body() authDto: AuthDto): Promise<Tokens> {
-    return this.authService.signinLocal(authDto);
-  }
-
-  @Post('/local/signout')
-  signoutLocal() {
-    this.authService.signoutLocal();
-  }
-
-  @Post('/logout')
-  logout() {
-    this.authService.logout();
-  }
-
-  @Post('/refresh')
-  refreshToken() {
-    this.authService.refreshToken();
+    return this.authService.signupLocal(authDto);
   }
 }

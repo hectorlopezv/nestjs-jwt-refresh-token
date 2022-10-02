@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { AuthDto } from './dto/auth.dto';
 import * as bcrypt from 'bcrypt';
@@ -25,6 +25,21 @@ export class AuthService {
       newUser.email,
     );
     await this.updateRtHash(newUser.id, refresh_token);
+    return { access_token, refresh_token };
+  }
+  async signinLocal(authDto: AuthDto): Promise<Tokens> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: authDto.email },
+    });
+    if (!user) throw new ForbiddenException('Access Denied');
+
+    const passWordMatches = await bcrypt.compare(authDto.password, user.hash);
+    if (!passWordMatches) throw new ForbiddenException('Access Denied');
+    const { access_token, refresh_token } = await this.getTokens(
+      user.id,
+      user.email,
+    );
+    await this.updateRtHash(user.id, refresh_token);
     return { access_token, refresh_token };
   }
 

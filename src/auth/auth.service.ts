@@ -38,7 +38,7 @@ export class AuthService {
     const tokens = await this.getTokens(user.id, user.email);
     await this.updateRtHash(user.id, tokens.refresh_token);
 
-    return tokens;
+    return { ...tokens, user };
   }
 
   async signinLocal(dto: AuthDto): Promise<Tokens> {
@@ -56,7 +56,7 @@ export class AuthService {
     const tokens = await this.getTokens(user.id, user.email);
     await this.updateRtHash(user.id, tokens.refresh_token);
 
-    return tokens;
+    return { ...tokens, user };
   }
 
   async logout(userId: number): Promise<boolean> {
@@ -88,7 +88,7 @@ export class AuthService {
     const tokens = await this.getTokens(user.id, user.email);
     await this.updateRtHash(user.id, tokens.refresh_token);
 
-    return tokens;
+    return { ...tokens, user };
   }
 
   async updateRtHash(userId: number, rt: string): Promise<void> {
